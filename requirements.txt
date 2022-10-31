@@ -1,5 +1,5 @@
-torch
-horovod
-tensorboardX
+torch>=1.5
+horovod>=0.19.4
+tensorboardX>=1.2
 numpy
 tqdm
