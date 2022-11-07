@@ -161,11 +161,8 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         """
         A context manager used to specify that optimizer.step() should
         not perform synchronization.
-
         It's typically used in a following pattern:
-
         .. code-block:: python
-
             optimizer.synchronize()
             with optimizer.skip_synchronize():
                 optimizer.step()
@@ -377,21 +374,16 @@ def DistributedOptimizer(optimizer, named_parameters=None,
     """
     An optimizer that wraps another torch.optim.Optimizer, using an allreduce to
     combine gradient values before applying gradients to model weights.
-
     Allreduce operations are executed after each gradient is computed by ``loss.backward()``
     in parallel with each other. The ``step()`` method ensures that all allreduce operations are
     finished before applying gradients to the model.
-
     DistributedOptimizer exposes the ``synchronize()`` method, which forces allreduce operations
     to finish before continuing the execution. It's useful in conjunction with gradient
     clipping, or other operations that modify gradients in place before ``step()`` is executed.
     Make sure to use ``optimizer.skip_synchronize()`` if you're calling ``synchronize()``
     in your code.
-
     Example of gradient clipping:
-
     .. code-block:: python
-
         output = model(data)
         loss = F.nll_loss(output, target)
         loss.backward()
@@ -399,7 +391,6 @@ def DistributedOptimizer(optimizer, named_parameters=None,
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
         with optimizer.skip_synchronize():
             optimizer.step()
-
     Arguments:
         optimizer: Optimizer to use for computing gradients and applying updates.
         named_parameters: A mapping between parameter names and values. Used for naming of
