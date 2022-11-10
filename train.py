@@ -151,7 +151,7 @@ def main():
 
     # resume from checkpoint
     last_epoch, best_metric = -1, None
-    if os.path.exists(configs.train.latest_pth_path):
+    if False: #os.path.exists(configs.train.latest_pth_path):
         printr(f'\n[resume_path] = {configs.train.latest_pth_path}')
         checkpoint = torch.load(configs.train.latest_pth_path)
         if 'model' in checkpoint:

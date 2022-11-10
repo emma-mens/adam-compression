@@ -52,6 +52,7 @@ class DGCCompressor:
         self.resample = resample
 
         self.attributes = {}
+        self.state = {}
 
     def initialize(self, named_parameters):
         if hvd.rank() == 0:
@@ -120,33 +121,52 @@ class DGCCompressor:
             else:
                 samples = importance[torch.randint(0, numel, (num_samples, ), device=tensor.device)]
 
+        ## SNR
+        grad = tensor
+        if p not in self.state:
+            self.state[tensor] = {"exp_avg": torch.zeros_like(grad), "exp_avg_sq": torch.zeros_like(grad)}
+        state = self.state[tensor]
+        exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
+        snr = torch.div(exp_avg, torch.sqrt(exp_avg_sq + 1e-8))
+        importance = snr
+        samples = snr
+
+        ## END SNR
+
         threshold = torch.min(torch.topk(samples, top_k_samples, 0, largest=True, sorted=False)[0])
         mask = torch.ge(importance, threshold)
+
+        # Decay the first and second moment running average coefficient
+        beta1 = 0.9
+        beta2 = 0.995
+        exp_avg[mask] = beta1 * exp_avg[mask] + (1 - beta1) * grad[mask]
+        exp_avg_sq[mask] = beta2 * exp_avg_sq[mask] + (1 - beta2) * grad[mask]*grad[mask] 
+
         indices = mask.nonzero().view(-1)
         num_indices = indices.numel()
 
-        if numel > num_samples:
-            # code modified from https://github.com/sands-lab/grace/blob/master/grace_dl/torch/compressor/dgc.py
-            for _ in range(self.max_adaptation_iters):
-                if num_indices > num_selects:
-                    if num_indices > num_selects * self.compress_upper_bound:
-                        if self.resample:
-                            indices = indices[
-                                torch.topk(importance[indices], num_selects,
-                                           0, largest=True, sorted=False)[1]
-                            ]
-                            break
-                        else:
-                            threshold = threshold * self.compress_upper_bound
-                    else:
-                        break
-                elif num_indices < self.compress_lower_bound * num_selects:
-                    threshold = threshold * self.compress_lower_bound
-                else:
-                    break
-                mask = torch.ge(importance, threshold)
-                indices = mask.nonzero().view(-1)
-                num_indices = indices.numel()
+        #if numel > num_samples:
+        #    # code modified from https://github.com/sands-lab/grace/blob/master/grace_dl/torch/compressor/dgc.py
+        #    for _ in range(self.max_adaptation_iters):
+        #        if num_indices > num_selects:
+        #            if num_indices > num_selects * self.compress_upper_bound:
+        #                if self.resample:
+        #                    indices = indices[
+        #                        torch.topk(importance[indices], num_selects,
+        #                                   0, largest=True, sorted=False)[1]
+        #                    ]
+        #                    break
+        #                else:
+        #                    threshold = threshold * self.compress_upper_bound
+        #            else:
+        #                break
+        #        elif num_indices < self.compress_lower_bound * num_selects:
+        #            threshold = threshold * self.compress_lower_bound
+        #        else:
+        #            break
+        #        mask = torch.ge(importance, threshold)
+        #        indices = mask.nonzero().view(-1)
+        #        num_indices = indices.numel()
 
         indices = indices[:num_selects]
         values = tensor[indices]

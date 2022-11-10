@@ -117,6 +117,8 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         name = self._parameter_names.get(p)
         tensor_compressed, ctx = self._compression.compress(p.grad, name)
 
+        # TODO: capture the communicated tensor size here (https://datascience.stackexchange.com/questions/72870/how-to-find-the-size-of-a-tensor-in-bytes)
+        # TODO: are we able to do this on the grad matrix level instead of parameter level?
         handle = self._communicate_(tensor_compressed, name=name, op=self.op)
         return handle, ctx
 
