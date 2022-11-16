@@ -23,3 +23,6 @@ configs.train.scheduler = Config(torch.optim.lr_scheduler.MultiStepLR)
 configs.train.scheduler.milestones = [e - configs.train.warmup_lr_epochs 
                                       for e in [30, 60, 80]]
 configs.train.scheduler.gamma = 0.1
+
+# logs
+configs.train.logprefix = '/gscratch/scrubbed/emazuh/experiments/grad/'

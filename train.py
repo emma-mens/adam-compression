@@ -53,7 +53,7 @@ def main():
     configs.train.num_batches_per_step = \
         configs.train.get('num_batches_per_step', 1)
 
-    configs.train.save_path = get_save_path(*args.configs) \
+    configs.train.save_path = get_save_path(*args.configs, configs.train.logprefix) \
                               + f'{args.suffix}.np{hvd.size()}'
     printr(f'[train.save_path] = {configs.train.save_path}')
     checkpoint_path = os.path.join(configs.train.save_path, 'checkpoints')
@@ -294,11 +294,15 @@ def train(model, loader, device, epoch, sampler, criterion, optimizer,
             loss += _loss.item()
         optimizer.step()
 
+        # write optimizer state info
+
         # write train loss log
         loss = hvd.allreduce(loss, name='loss').item()
         if writer is not None:
             num_inputs += step_size * hvd.size()
             writer.add_scalar('loss/train', loss, num_inputs)
+            writer.add_scalar('snr_median', optimizer.median_snr, num_inputs) 
+            writer.add_scalar('snr_max', optimizer.max_snr, num_inputs)
 
 
 def evaluate(model, loader, device, meters, split='test', quiet=True):
@@ -397,7 +401,7 @@ def get_save_path(*configs, prefix='runs'):
             if n > 1 and i < n - 1:
                 p += '+'
         if n > 1:
-            p += ']'
+            p += ']sgd-snr'
         return p
 
     return os.path.join(prefix, get_str(memo, ''))

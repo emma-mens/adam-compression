@@ -154,6 +154,14 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             output = self._synchronize_(handle)
             self._allreduce_delay[p] = self.backward_passes_per_step
             p.grad.set_(self._compression.decompress(output, ctx))
+        # compute median of median snr
+        self.median_snr = 0
+        if hasattr(self._compression, 'state'):
+            # print(self._compression.state)
+            median_list = [i['snr_median'] for i in self._compression.state.values()]
+            max_list = [i['snr_max'] for i in self._compression.state.values()]
+            self.median_snr = torch.median(torch.tensor(median_list))
+            self.max_snr = torch.median(torch.tensor(max_list))
         self._handles.clear()
 
         self._synchronized = True

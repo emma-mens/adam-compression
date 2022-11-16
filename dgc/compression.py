@@ -121,15 +121,18 @@ class DGCCompressor:
             else:
                 samples = importance[torch.randint(0, numel, (num_samples, ), device=tensor.device)]
 
-        ## SNR
-        grad = tensor
-        if p not in self.state:
-            self.state[tensor] = {"exp_avg": torch.zeros_like(grad), "exp_avg_sq": torch.zeros_like(grad)}
-        state = self.state[tensor]
+        # SNR
+        grad = tensor.data
+        if name not in self.state:
+            self.state[name] = {"exp_avg": torch.zeros_like(grad), "exp_avg_sq": torch.zeros_like(grad)}
+        state = self.state[name]
         exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
         snr = torch.div(exp_avg, torch.sqrt(exp_avg_sq + 1e-8))
-        importance = snr
-        samples = snr
+        state['snr_median'] = torch.median(torch.abs(snr))
+        state['snr_max'] = torch.max(torch.abs(snr))
+        importance = torch.abs(snr)
+        samples = torch.abs(snr)
+        #top_k_samples = (0.1*top_k_samples).int()
 
         ## END SNR
 
