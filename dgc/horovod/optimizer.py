@@ -160,8 +160,10 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             # print(self._compression.state)
             median_list = [i['snr_median'] for i in self._compression.state.values()]
             max_list = [i['snr_max'] for i in self._compression.state.values()]
+            top_min_list = [i['snr_top_min'] for i in self._compression.state.values()]
             self.median_snr = torch.median(torch.tensor(median_list))
             self.max_snr = torch.median(torch.tensor(max_list))
+            self.top_min_snr = torch.median(torch.tensor(top_min_list))
         self._handles.clear()
 
         self._synchronized = True

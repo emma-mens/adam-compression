@@ -19,7 +19,8 @@ class DGCCompressor:
                  sample_ratio=0.01, strided_sample=True,
                  compress_upper_bound=1.3, compress_lower_bound=0.8, max_adaptation_iters=10, resample=True,
                  fp16_values=False, int32_indices=False,
-                 warmup_epochs=-1, warmup_coeff=None):
+                 warmup_epochs=-1, warmup_coeff=None, snr_compression=False, snr_warmup=False,
+                 beta1=0.9, beta2=0.995):
         self.world_size = hvd.size()
         self.op = Average
         self.fp16_values = fp16_values
@@ -53,6 +54,13 @@ class DGCCompressor:
 
         self.attributes = {}
         self.state = {}
+        self.epoch = 0
+        # Use SNR compression if True else use DGC
+        self.snr_compression = snr_compression 
+        # Use SNR compression during warmup phase, else use DGC
+        self.snr_warmup = snr_warmup
+        self.beta1 = beta1
+        self.beta2 = beta2
 
     def initialize(self, named_parameters):
         if hvd.rank() == 0:
@@ -90,6 +98,7 @@ class DGCCompressor:
                       f' {f"at stride {sample_stride}" if self.strided_sample else "uniformly"}')
     
     def warmup_compress_ratio(self, epoch):
+        self.epoch = epoch
         if self.warmup_epochs > 0:
             if epoch < self.warmup_epochs:
                 if isinstance(self.warmup_coeff, (tuple, list)):
@@ -122,16 +131,21 @@ class DGCCompressor:
                 samples = importance[torch.randint(0, numel, (num_samples, ), device=tensor.device)]
 
         # SNR
-        grad = tensor.data
-        if name not in self.state:
-            self.state[name] = {"exp_avg": torch.zeros_like(grad), "exp_avg_sq": torch.zeros_like(grad)}
-        state = self.state[name]
-        exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
-        snr = torch.div(exp_avg, torch.sqrt(exp_avg_sq + 1e-8))
-        state['snr_median'] = torch.median(torch.abs(snr))
-        state['snr_max'] = torch.max(torch.abs(snr))
-        importance = torch.abs(snr)
-        samples = torch.abs(snr)
+        do_snr_compression = self.snr_compression
+        if self.epoch < self.warmup_epochs:
+            do_snr_compression = self.snr_warmup
+
+        if do_snr_compression:
+            grad = tensor.data
+            if name not in self.state:
+                self.state[name] = {"exp_avg": torch.zeros_like(grad), "exp_avg_sq": torch.zeros_like(grad)}
+            state = self.state[name]
+            exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
+            snr = torch.div(exp_avg, torch.sqrt(exp_avg_sq + 1e-8))
+            state['snr_median'] = torch.median(torch.abs(snr))
+            state['snr_max'] = torch.max(torch.abs(snr))
+            importance = torch.abs(snr)
+            samples = torch.abs(snr)
         #top_k_samples = (0.1*top_k_samples).int()
 
         ## END SNR
@@ -140,10 +154,10 @@ class DGCCompressor:
         mask = torch.ge(importance, threshold)
 
         # Decay the first and second moment running average coefficient
-        beta1 = 0.9
-        beta2 = 0.995
-        exp_avg[mask] = beta1 * exp_avg[mask] + (1 - beta1) * grad[mask]
-        exp_avg_sq[mask] = beta2 * exp_avg_sq[mask] + (1 - beta2) * grad[mask]*grad[mask] 
+        if do_snr_compression:
+            state['snr_top_min'] = threshold
+            exp_avg[mask] = self.beta1 * exp_avg[mask] + (1 - self.beta1) * grad[mask]
+            exp_avg_sq[mask] = self.beta2 * exp_avg_sq[mask] + (1 - self.beta2) * grad[mask]*grad[mask] 
 
         indices = mask.nonzero().view(-1)
         num_indices = indices.numel()

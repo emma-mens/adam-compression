@@ -53,7 +53,7 @@ def main():
     configs.train.num_batches_per_step = \
         configs.train.get('num_batches_per_step', 1)
 
-    configs.train.save_path = get_save_path(*args.configs, configs.train.logprefix) \
+    configs.train.save_path = get_save_path(*args.configs, prefix=configs.train.logprefix) \
                               + f'{args.suffix}.np{hvd.size()}'
     printr(f'[train.save_path] = {configs.train.save_path}')
     checkpoint_path = os.path.join(configs.train.save_path, 'checkpoints')
@@ -303,6 +303,7 @@ def train(model, loader, device, epoch, sampler, criterion, optimizer,
             writer.add_scalar('loss/train', loss, num_inputs)
             writer.add_scalar('snr_median', optimizer.median_snr, num_inputs) 
             writer.add_scalar('snr_max', optimizer.max_snr, num_inputs)
+            writer.add_scalar('snr_top_min', optimizer.top_min_snr, num_inputs)
 
 
 def evaluate(model, loader, device, meters, split='test', quiet=True):
