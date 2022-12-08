@@ -20,7 +20,7 @@ class DGCCompressor:
                  compress_upper_bound=1.3, compress_lower_bound=0.8, max_adaptation_iters=10, resample=True,
                  fp16_values=False, int32_indices=False,
                  warmup_epochs=-1, warmup_coeff=None, snr_compression=False, snr_warmup=False,
-                 beta1=0.9, beta2=0.995):
+                 beta1=0.9, beta2=0.995, beta1_warmup=False, l_t=None, bin_multiplier=2):
         self.world_size = hvd.size()
         self.op = Average
         self.fp16_values = fp16_values
@@ -59,8 +59,14 @@ class DGCCompressor:
         self.snr_compression = snr_compression 
         # Use SNR compression during warmup phase, else use DGC
         self.snr_warmup = snr_warmup
+        # Beta values for computing moving SNR
         self.beta1 = beta1
         self.beta2 = beta2
+        # Ramp up the beta1 value if True
+        self.beta1_warmup = beta1_warmup
+        # bin size for filtering snr using neighboring values
+        self.l_t = l_t
+        self.bin_multiplier = bin_multiplier
 
     def initialize(self, named_parameters):
         if hvd.rank() == 0:
@@ -132,30 +138,59 @@ class DGCCompressor:
 
         # SNR
         do_snr_compression = self.snr_compression
+        beta1 = self.beta1
+        beta2 = self.beta2
         if self.epoch < self.warmup_epochs:
             do_snr_compression = self.snr_warmup
+            # warmup beta1
+            if self.beta1_warmup:
+                beta1 = max(0.001, self.beta1*self.epoch/self.warmup_epochs)
 
         if do_snr_compression:
             grad = tensor.data
             if name not in self.state:
-                self.state[name] = {"exp_avg": torch.zeros_like(grad), "exp_avg_sq": torch.zeros_like(grad)}
+                debug = {"bin_compress_ratio": 1, "bin_disparity": -1, "bin_max": -1, "bin_median": -1}
+                self.state[name] = {"exp_avg": torch.zeros_like(grad), "exp_avg_sq": torch.zeros_like(grad),
+                        "debug": debug}
             state = self.state[name]
             exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
             snr = torch.div(exp_avg, torch.sqrt(exp_avg_sq + 1e-8))
-            state['snr_median'] = torch.median(torch.abs(snr))
-            state['snr_max'] = torch.max(torch.abs(snr))
+            state['debug']['snr_median'] = torch.median(torch.abs(snr))
+            state['debug']['snr_max'] = torch.max(torch.abs(snr))
+            state['debug']['compress_ratio'] = self.compress_ratio
             importance = torch.abs(snr)
             samples = torch.abs(snr)
         #top_k_samples = (0.1*top_k_samples).int()
 
         ## END SNR
 
-        threshold = torch.min(torch.topk(samples, top_k_samples, 0, largest=True, sorted=False)[0])
-        mask = torch.ge(importance, threshold)
+        if self.l_t is not None:
+            if self.epoch <= 3: # state["first_step"] == 1:
+                mask = torch.ones_like(grad).long()
+                # state["first_step"] = 0
+                threshold = 0
+                state['bin_compress_ratio'] = mask.float().mean() # compression ratio of alpha means we only send alpha percent of weights
+            else:
+                mask_shape = importance.shape
+                importance = importance.reshape((-1, self.l_t))
+                bin_max, _ = torch.max(importance, axis=1)
+                bin_max = bin_max.reshape((-1, 1)) # reshape to compatible dimensionality for binned to_mask matrix for comparison
+                mask = torch.gt(self.bin_multiplier * importance, bin_max).reshape(mask_shape)
+#                 state['debug']['bin_compress_ratio'] = mask.float().mean()
+#                 state['debug']['bin_disparity'] = 0 #torch.median(torch.abs(bin_max - importance.median(axis=1)[0]))
+#                 state['debug']['bin_max'] = torch.median(bin_max)
+#                 state['debug']['bin_median'] = importance.median() #torch.median(torch.median(importance, axis=1)[0])[0]
+#                 print(state['debug']['bin_disparity'])
+                # print('importance cont', importance.max(), bin_max.max())
+                threshold = 0 if importance.sum() == 0 else torch.min(importance.reshape(-1)[mask.reshape(-1)])
+                print('threshold', threshold, 'snr', snr.sum(), 'bin_max', bin_max.max(), 'importance_median', importance.median())
+        else:
+            threshold = torch.min(torch.topk(samples, top_k_samples, 0, largest=True, sorted=False)[0])
+            mask = torch.ge(importance, threshold)
 
         # Decay the first and second moment running average coefficient
         if do_snr_compression:
-            state['snr_top_min'] = threshold
+            state['debug']['snr_top_min'] = threshold
             exp_avg[mask] = self.beta1 * exp_avg[mask] + (1 - self.beta1) * grad[mask]
             exp_avg_sq[mask] = self.beta2 * exp_avg_sq[mask] + (1 - self.beta2) * grad[mask]*grad[mask] 
 

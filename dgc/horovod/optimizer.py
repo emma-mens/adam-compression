@@ -78,6 +78,7 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         self._should_synchronize = True
         if size() > 1 or os.environ.get('HOROVOD_ELASTIC') == '1':
             self._register_hooks()
+        self._stats = {}
 
     def load_state_dict(self, *args, **kwargs):
         self._handles = {}
@@ -157,16 +158,35 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         # compute median of median snr
         self.median_snr = 0
         if hasattr(self._compression, 'state'):
+            self.update_stats(self._compression.state)
             # print(self._compression.state)
-            median_list = [i['snr_median'] for i in self._compression.state.values()]
-            max_list = [i['snr_max'] for i in self._compression.state.values()]
-            top_min_list = [i['snr_top_min'] for i in self._compression.state.values()]
-            self.median_snr = torch.median(torch.tensor(median_list))
-            self.max_snr = torch.median(torch.tensor(max_list))
-            self.top_min_snr = torch.median(torch.tensor(top_min_list))
+            # TODO: add method here to compute all stats with a naming convention and return medians in a dict
+#             median_list = [i['snr_median'] for i in self._compression.state.values()]
+#             max_list = [i['snr_max'] for i in self._compression.state.values()]
+#             top_min_list = [i['snr_top_min'] for i in self._compression.state.values()]
+#             compression_rate = [i['compress_ratio'] for i in self._compression.state.values()]
+#             bin_compression_rate = [i['bin_compress_ratio'] for i in self._compression.state.values()]
+#             bin_disparity = [i['bin_disparity'] for i in self._compression.state.values()]
+#             self.median_snr = torch.median(torch.tensor(median_list))
+#             self.max_snr = torch.median(torch.tensor(max_list))
+#             self.top_min_snr = torch.median(torch.tensor(top_min_list))
+#             self.compression_rate = torch.median(torch.tensor(compression_rate))
+#             self.bin_compression_rate = torch.median(torch.tensor(bin_compression_rate))
+#             self.bin_disparity = torch.median(torch.tensor(bin_disparity))
         self._handles.clear()
 
         self._synchronized = True
+
+    def update_stats(self, state):
+        # i = state[name]
+        # {name: {debug: {}}, ...}
+        debug = [i['debug'] for i in state.values()]
+        stat_keys = [i for i in debug[0].keys()]
+        # compute the median fo the stats in the state dict
+
+        for stat in stat_keys:
+            data = [i[stat] for i in debug]
+            self._stats[stat] = torch.median(torch.tensor(data))
 
     @contextmanager
     def skip_synchronize(self):
