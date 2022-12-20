@@ -303,12 +303,6 @@ def train(model, loader, device, epoch, sampler, criterion, optimizer,
             writer.add_scalar('loss/train', loss, num_inputs)
             for stat in optimizer._stats:
                 writer.add_scalar(stat, optimizer._stats[stat], num_inputs)
-#             writer.add_scalar('snr_median', optimizer.median_snr, num_inputs) 
-#             writer.add_scalar('snr_max', optimizer.max_snr, num_inputs)
-#             writer.add_scalar('snr_top_min', optimizer.top_min_snr, num_inputs)
-#             writer.add_scalar('compression_rate', optimizer.compression_rate, num_inputs)
-#             writer.add_scalar('bin_compression_rate', optimizer.bin_compression_rate, num_inputs)
-#             writer.add_scalar('bin_disparity', optimizer.bin_disparity, num_inputs)
 
 
 def evaluate(model, loader, device, meters, split='test', quiet=True):

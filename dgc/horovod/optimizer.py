@@ -155,38 +155,21 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             output = self._synchronize_(handle)
             self._allreduce_delay[p] = self.backward_passes_per_step
             p.grad.set_(self._compression.decompress(output, ctx))
-        # compute median of median snr
-        self.median_snr = 0
+        # compute median of stats if possible
         if hasattr(self._compression, 'state'):
             self.update_stats(self._compression.state)
-            # print(self._compression.state)
-            # TODO: add method here to compute all stats with a naming convention and return medians in a dict
-#             median_list = [i['snr_median'] for i in self._compression.state.values()]
-#             max_list = [i['snr_max'] for i in self._compression.state.values()]
-#             top_min_list = [i['snr_top_min'] for i in self._compression.state.values()]
-#             compression_rate = [i['compress_ratio'] for i in self._compression.state.values()]
-#             bin_compression_rate = [i['bin_compress_ratio'] for i in self._compression.state.values()]
-#             bin_disparity = [i['bin_disparity'] for i in self._compression.state.values()]
-#             self.median_snr = torch.median(torch.tensor(median_list))
-#             self.max_snr = torch.median(torch.tensor(max_list))
-#             self.top_min_snr = torch.median(torch.tensor(top_min_list))
-#             self.compression_rate = torch.median(torch.tensor(compression_rate))
-#             self.bin_compression_rate = torch.median(torch.tensor(bin_compression_rate))
-#             self.bin_disparity = torch.median(torch.tensor(bin_disparity))
         self._handles.clear()
 
         self._synchronized = True
 
     def update_stats(self, state):
-        # i = state[name]
-        # {name: {debug: {}}, ...}
         debug = [i['debug'] for i in state.values()]
         stat_keys = [i for i in debug[0].keys()]
-        # compute the median fo the stats in the state dict
-
+        
+        # compute the summary for the stats in the state dict
         for stat in stat_keys:
-            data = [i[stat] for i in debug]
-            self._stats[stat] = torch.median(torch.tensor(data))
+            data = torch.tensor([i[stat] for i in debug])
+            self._stats[stat] = torch.max(data)
 
     @contextmanager
     def skip_synchronize(self):
