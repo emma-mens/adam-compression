@@ -21,6 +21,7 @@ from contextlib import contextmanager
 
 import torch
 
+import horovod.torch as hvd
 from horovod.torch.mpi_ops import allreduce_async_
 from horovod.torch.mpi_ops import synchronize as synchronize_
 from horovod.torch.mpi_ops import size
@@ -79,6 +80,7 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         if size() > 1 or os.environ.get('HOROVOD_ELASTIC') == '1':
             self._register_hooks()
         self._stats = {}
+        self._steps = 0
 
     def load_state_dict(self, *args, **kwargs):
         self._handles = {}
@@ -163,13 +165,18 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         self._synchronized = True
 
     def update_stats(self, state):
-        debug = [i['debug'] for i in state.values()]
+        debug = [i['debug'] for i in state.values()] # per layer information
         stat_keys = [i for i in debug[0].keys()]
         
         # compute the summary for the stats in the state dict
         for stat in stat_keys:
             data = torch.tensor([i[stat] for i in debug])
+#             if stat == 'grad_quantile/grad_0.5' and hvd.rank() == 0:
+#                 print(torch.median(data), data)
             self._stats[stat] = torch.max(data)
+#         self._steps += 1
+#         if self._steps >= 2:
+#             exit()
 
     @contextmanager
     def skip_synchronize(self):
@@ -315,7 +322,7 @@ class _DistributedAdasumOptimizer(torch.optim.Optimizer):
         p.data.sub_(start)
 
         # allreduce as before
-        tensor_compressed, ctx = self._compression.compress(p, name)
+        tensor_compressed, ctx = self._compression.compress(p, name, step=self._steps)
         handle = self._communicate_(tensor_compressed.data, name=name, op=Adasum)
 
         # reset stashed parameters

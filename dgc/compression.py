@@ -21,7 +21,8 @@ class DGCCompressor:
                  compress_upper_bound=1.3, compress_lower_bound=0.8, max_adaptation_iters=10, resample=True,
                  fp16_values=False, int32_indices=False,
                  warmup_epochs=-1, warmup_coeff=None, snr_compression=False, snr_warmup=False,
-                 beta1=0.9, beta2=0.995, beta1_warmup=False, l_t=None, bin_multiplier=2, snr_init='zeros'):
+                 beta1=0.9, beta2=0.995, beta1_warmup=False, l_t=None, bin_multiplier=2, snr_init='zeros',
+                sq_init_factor=1.0, init_snr_after_warmup=False, use_bias_correction=False):
         self.world_size = hvd.size()
         self.op = Average
         self.fp16_values = fp16_values
@@ -69,6 +70,9 @@ class DGCCompressor:
         self.l_t = l_t
         self.bin_multiplier = bin_multiplier
         self.snr_init = snr_init # init in {'zeros|ones|1e-8|grad_init'}
+        self.sq_init_factor = sq_init_factor # multiplier for the snr second moment initializer
+        self.init_snr_after_warmup = init_snr_after_warmup
+        self.use_bias_correction = use_bias_correction
 
     def initialize(self, named_parameters):
         if hvd.rank() == 0:
@@ -133,11 +137,13 @@ class DGCCompressor:
         elif self.snr_init == '1e-8':
             return 1e-8*torch.ones_like(grad), 1e-8*torch.ones_like(grad)
         elif self.snr_init == 'grad_init':
-            return copy.deepcopy(grad), copy.deepcopy(grad)
+            return copy.deepcopy(grad), copy.deepcopy(grad) * copy.deepcopy(grad)
+        elif self.snr_init == 'av_grad_init':
+            return copy.deepcopy(grad), self.sq_init_factor*torch.ones_like(grad)
         else:
-            raise ValueError("snr_init must be in {`zeros`|`ones`|`1e-8`|`grad_init`}")
+            raise ValueError("snr_init must be in {`zeros`|`ones`|`1e-8`|`grad_init`|`av_grad_init`}")
 
-    def _sparsify(self, tensor, name):
+    def _sparsify(self, tensor, name, step=0):
         tensor = tensor.view(-1)
         numel, shape, num_selects, num_samples, top_k_samples, sample_stride = self.attributes[name]
 
@@ -163,11 +169,24 @@ class DGCCompressor:
 
         qs = [0, .1, .3, .5, .8, .9, .999, .9995, .9999, .99999]
         grad = tensor.data
+        init_snr = (not self.init_snr_after_warmup) or ( )
         if name not in self.state:
             avg, sq = self.initialize_snr(grad)
+#             avg, sq = grad, torch.ones_like(grad)
             debug = {"bin_compress_ratio": 1, "bin_disparity": -1, "bin_max": -1, "bin_median": -1}
-            self.state[name] = {"exp_avg": avg, "exp_avg_sq": sq, "debug": debug}
+            self.state[name] = {"exp_avg": avg, "exp_avg_sq": sq, "debug": debug, "reinitialized": False}
+        
         state = self.state[name]
+        
+        if self.init_snr_after_warmup and (self.epoch >= self.warmup_epochs):
+            step -= 100*self.warmup_epochs
+            if not state["reinitialized"]:
+                avg, sq = self.initialize_snr(grad) # re-initialize
+                state["exp_avg"] = avg
+                state["exp_avg_sq"] = sq
+                state["reinitialized"] = True # only reinitialize once
+            
+        
         exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
         snr = torch.abs(torch.div(exp_avg, torch.sqrt(exp_avg_sq + 1e-8)))
         state['debug']['snr_median'] = torch.median(snr)
@@ -175,6 +194,12 @@ class DGCCompressor:
         quants = torch.quantile(snr, torch.tensor(qs).to(tensor.device))
         for q in range(len(qs)):
             state['debug'][f'snr_quantile/snr_{qs[q]}'] = quants[q]
+        quants = torch.quantile(exp_avg, torch.tensor(qs).to(tensor.device))
+        for q in range(len(qs)):
+            state['debug'][f'exp_avg_quantile/exp_avg_{qs[q]}'] = quants[q]
+        quants = torch.quantile(exp_avg_sq, torch.tensor(qs).to(tensor.device))
+        for q in range(len(qs)):
+            state['debug'][f'exp_avg_sq_quantile/exp_avg_sq_{qs[q]}'] = quants[q]
         state['debug']['compress_ratio'] = self.compress_ratio
         
         # include stats about the gradient
@@ -234,10 +259,14 @@ class DGCCompressor:
 
         # Decay the first and second moment running average coefficient
 #         if do_snr_compression:
-        state['debug']['snr_top_min'] = threshold
+#         state['debug']['snr_top_min'] = threshold
         exp_avg[mask] = self.beta1 * exp_avg[mask] + (1 - self.beta1) * grad[mask]
         exp_avg_sq[mask] = self.beta2 * exp_avg_sq[mask] + (1 - self.beta2) * grad[mask]*grad[mask] 
 
+        if self.use_bias_correction:
+            exp_avg[mask] = exp_avg[mask]/(1 - self.beta1**step)
+            exp_avg_sq[mask] = exp_avg_sq[mask]/(1 - self.beta2**step)
+            
         indices = mask.nonzero().view(-1)
         num_indices = indices.numel()
 
@@ -266,6 +295,12 @@ class DGCCompressor:
 
         indices = indices[:num_selects]
         values = tensor[indices]
+        
+#         if hvd.rank() == 0:
+#             if name == 'conv1.weight':
+#                 # print(name, torch.median(torch.abs(grad)))
+#                 print(' one count', mask.sum(), 'threshold', threshold, 'top_k_samples', top_k_samples)
+#                 print(' indices', indices, 'values', values)
         return values, indices, numel, shape, num_selects
 
     def compress(self, tensor, name):
