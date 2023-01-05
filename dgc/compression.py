@@ -139,7 +139,7 @@ class DGCCompressor:
         elif self.snr_init == 'grad_init':
             return copy.deepcopy(grad), copy.deepcopy(grad) * copy.deepcopy(grad)
         elif self.snr_init == 'av_grad_init':
-            return copy.deepcopy(grad), self.sq_init_factor*torch.ones_like(grad)
+            return copy.deepcopy(grad), 1/(torch.abs(copy.deepcopy(grad)) + 1e-8) # torch.rand_like(grad) + 1e-4 #self.sq_init_factor*torch.ones_like(grad)
         else:
             raise ValueError("snr_init must be in {`zeros`|`ones`|`1e-8`|`grad_init`|`av_grad_init`}")
 
@@ -169,9 +169,13 @@ class DGCCompressor:
 
         qs = [0, .1, .3, .5, .8, .9, .999, .9995, .9999, .99999]
         grad = tensor.data
-        init_snr = (not self.init_snr_after_warmup) or ( )
+#         init_snr = (not self.init_snr_after_warmup) or ( )
+#         if hvd.rank() == 0:
+#             if name == 'conv1.weight':
+#                 print('name in state:', name in self.state)
         if name not in self.state:
             avg, sq = self.initialize_snr(grad)
+#             avg, sq = copy.deepcopy(grad), 1/(torch.abs(copy.deepcopy(grad)) + 1e-8) #torch.rand_like(grad) + 1e-4
 #             avg, sq = grad, torch.ones_like(grad)
             debug = {"bin_compress_ratio": 1, "bin_disparity": -1, "bin_max": -1, "bin_median": -1}
             self.state[name] = {"exp_avg": avg, "exp_avg_sq": sq, "debug": debug, "reinitialized": False}
@@ -293,14 +297,20 @@ class DGCCompressor:
         #        indices = mask.nonzero().view(-1)
         #        num_indices = indices.numel()
 
-        indices = indices[:num_selects]
+        #indices = indices[:num_selects]
+        indices = indices[:mask.sum().int()] # TODO
         values = tensor[indices]
         
-#         if hvd.rank() == 0:
-#             if name == 'conv1.weight':
-#                 # print(name, torch.median(torch.abs(grad)))
-#                 print(' one count', mask.sum(), 'threshold', threshold, 'top_k_samples', top_k_samples)
-#                 print(' indices', indices, 'values', values)
+        if hvd.rank() == 0:
+            if name == 'conv1.weight':
+                # print(name, torch.median(torch.abs(grad)))
+                print('================================================')
+                print(' one count', mask.sum(), 'threshold', threshold, 'top_k_samples', top_k_samples)
+                print(' indices', indices, 'values', values)
+                print(' snr', torch.abs(torch.div(exp_avg, torch.sqrt(exp_avg_sq + 1e-8)))[indices])
+                print(' exp_avg', exp_avg[indices], 'exp_avg_sq', exp_avg_sq[indices])
+        indices = indices[:num_selects] # TODO
+        values = tensor[indices]
         return values, indices, numel, shape, num_selects
 
     def compress(self, tensor, name):

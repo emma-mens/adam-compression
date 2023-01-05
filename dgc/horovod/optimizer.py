@@ -172,10 +172,10 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         for stat in stat_keys:
             data = torch.tensor([i[stat] for i in debug])
 #             if stat == 'grad_quantile/grad_0.5' and hvd.rank() == 0:
-#                 print(torch.median(data), data)
-            self._stats[stat] = torch.max(data)
+#                 print(torch.max(data), data)
+            self._stats[stat] = torch.median(data)
 #         self._steps += 1
-#         if self._steps >= 2:
+#         if self._steps >= 4:
 #             exit()
 
     @contextmanager
